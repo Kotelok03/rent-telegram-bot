@@ -8,7 +8,7 @@ import asyncpg
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -221,7 +221,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(F.text.in_(CITY_LABELS))
+@router.message(StateFilter(None), F.text.in_(CITY_LABELS))
 async def handle_city(message: Message, state: FSMContext) -> None:
     city_label = message.text
     city_code = CITY_CODES[city_label]
