@@ -72,13 +72,14 @@ def build_main_keyboard(is_admin: bool) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="Бенидорм"), KeyboardButton(text="Аликанте")],
         [KeyboardButton(text="Кальпе"), KeyboardButton(text="Торревьеха")],
         [KeyboardButton(text="Коммерческое")],
+        [KeyboardButton(text="Перезапустить")],
     ]
 
     if is_admin:
         rows.append(
             [
-                KeyboardButton(text="/add_listing"),
-                KeyboardButton(text="/list_listings"),
+                KeyboardButton(text="Добавить объявление"),
+                KeyboardButton(text="Просмотреть список объявлений"),
             ]
         )
 
@@ -288,6 +289,11 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         "Здравствуйте. Выберите город, в котором ищете объект:",
         reply_markup=city_keyboard,
     )
+
+
+@router.message(F.text == "Перезапустить")
+async def handle_restart_button(message: Message, state: FSMContext) -> None:
+    await cmd_start(message, state)
 
 
 @router.message(StateFilter(None), F.text.in_(CITY_LABELS))
@@ -553,15 +559,14 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
 # Admin flow: add listing
 # =====================
 
-@router.message(Command("add_listing"))
+@router.message(Command("add_listing") | (F.text == "Добавить объявление"))
 async def admin_add_listing_start(message: Message, state: FSMContext) -> None:
     if message.from_user.id != ADMIN_USER_ID:
         return
 
-    city_keyboard = build_main_keyboard(is_admin=True)
-
+    # Оставляем основное меню, админ просто выбирает город кнопкой
     await state.set_state(AdminAddListingStates.city)
-    await message.answer("Выберите город для нового объекта (кнопкой ниже):", reply_markup=city_keyboard)
+    await message.answer("Выберите город для нового объекта (кнопкой ниже):")
 
 
 @router.message(AdminAddListingStates.city)
@@ -651,7 +656,7 @@ async def admin_save_listing(message: Message, state: FSMContext) -> None:
 # Admin flow: list and delete listings
 # =====================
 
-@router.message(Command("list_listings"))
+@router.message(Command("list_listings") | (F.text == "Просмотреть список объявлений"))
 async def admin_list_listings(message: Message) -> None:
     """Show last active listings with delete buttons."""
     if message.from_user.id != ADMIN_USER_ID:
