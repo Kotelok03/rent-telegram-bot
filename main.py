@@ -3,11 +3,12 @@ import os
 from dataclasses import dataclass
 from typing import List, Optional
 
+import asyncpg
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -18,18 +19,24 @@ from aiogram.types import (
     InlineKeyboardButton,
     CallbackQuery,
     Contact,
+    ReplyKeyboardRemove,
 )
 
-
 # =====================
-# Basic configuration
+# Configuration
 # =====================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not BOT_TOKEN or not ADMIN_USER_ID:
     raise RuntimeError("BOT_TOKEN and ADMIN_USER_ID must be set as environment variables")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL must be set as environment variable")
+
+db_pool: Optional[asyncpg.Pool] = None
 
 # Cities
 CITY_LABELS = ["Бенидорм", "Аликанте", "Кальпе", "Торревьеха", "Коммерческое"]
@@ -55,59 +62,118 @@ ROOMS = {
 }
 
 
+# =====================
+# Data model & DB
+# =====================
+
 @dataclass
 class Listing:
     id: str
     city_code: str
-    deal_type: str  # "rent" / "buy"
-    rooms: str      # "1" / "2" / "3+"
+    deal_type: str
+    rooms: str
     title: str
     description: str
-    link: str       # link to Telegram message or any URL
+    link: str
 
 
-# For MVP we store listings in memory.
-# Later this can be replaced with DB or external storage.
-LISTINGS: List[Listing] = [
-    Listing(
-        id="ben_rent_1_1",
-        city_code="benidorm",
-        deal_type="rent",
-        rooms="1",
-        title="Бенидорм, 1 спальня, 600€/мес",
-        description="Район Ринкон де Лойкс, 10 минут до моря, кондиционер, Wi-Fi.",
-        link="https://t.me/your_benidorm_group/1",
-    ),
-    Listing(
-        id="ben_rent_1_2",
-        city_code="benidorm",
-        deal_type="rent",
-        rooms="1",
-        title="Бенидорм, 1 спальня, 650€/мес",
-        description="Центр, рядом со всеми сервисами, возможна регистрация.",
-        link="https://t.me/your_benidorm_group/2",
-    ),
-    # Add your real listings here
-]
+async def init_db() -> None:
+    """Create connection pool and ensure table exists."""
+    global db_pool
+    db_pool = await asyncpg.create_pool(DATABASE_URL)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS listings (
+                id SERIAL PRIMARY KEY,
+                city_code TEXT NOT NULL,
+                deal_type TEXT NOT NULL,
+                rooms TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                link TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE
+            )
+            """
+        )
 
 
-def get_last_listings(city_code: str, deal_type: str, rooms: str, limit: int = 5) -> List[Listing]:
-    filtered = [
-        x for x in LISTINGS
-        if x.city_code == city_code and x.deal_type == deal_type and x.rooms == rooms
+async def db_get_last_listings(city_code: str, deal_type: str, rooms: str, limit: int = 5) -> List[Listing]:
+    """Return last listings for given filters."""
+    if db_pool is None:
+        raise RuntimeError("DB pool is not initialized")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, city_code, deal_type, rooms, title, description, link
+            FROM listings
+            WHERE city_code = $1 AND deal_type = $2 AND rooms = $3 AND is_active = TRUE
+            ORDER BY id DESC
+            LIMIT $4
+            """,
+            city_code, deal_type, rooms, limit,
+        )
+    return [
+        Listing(
+            id=str(row["id"]),
+            city_code=row["city_code"],
+            deal_type=row["deal_type"],
+            rooms=row["rooms"],
+            title=row["title"],
+            description=row["description"],
+            link=row["link"],
+        )
+        for row in rows
     ]
-    return filtered[-limit:]
 
 
-def find_listing_by_id(listing_id: str) -> Optional[Listing]:
-    for item in LISTINGS:
-        if item.id == listing_id:
-            return item
-    return None
+async def db_find_listing_by_id(listing_id: str) -> Optional[Listing]:
+    """Find single listing by id."""
+    if db_pool is None:
+        raise RuntimeError("DB pool is not initialized")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, city_code, deal_type, rooms, title, description, link
+            FROM listings
+            WHERE id = $1
+            """,
+            int(listing_id),
+        )
+    if not row:
+        return None
+    return Listing(
+        id=str(row["id"]),
+        city_code=row["city_code"],
+        deal_type=row["deal_type"],
+        rooms=row["rooms"],
+        title=row["title"],
+        description=row["description"],
+        link=row["link"],
+    )
+
+
+async def db_insert_listing(data: dict) -> None:
+    """Insert new listing from admin form."""
+    if db_pool is None:
+        raise RuntimeError("DB pool is not initialized")
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO listings (city_code, deal_type, rooms, title, description, link)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            data["city_code"],
+            data["deal_type"],
+            data["rooms"],
+            data["title"],
+            data["description"],
+            data["link"],
+        )
 
 
 # =====================
-# FSM states for application
+# FSM states
 # =====================
 
 class ApplicationStates(StatesGroup):
@@ -120,11 +186,20 @@ class ApplicationStates(StatesGroup):
     contact = State()
 
 
+class AdminAddListingStates(StatesGroup):
+    city = State()
+    deal_type = State()
+    rooms = State()
+    title = State()
+    description = State()
+    link = State()
+
+
 router = Router()
 
 
 # =====================
-# Start and city selection
+# User flow: search & application
 # =====================
 
 @router.message(CommandStart())
@@ -168,10 +243,6 @@ async def handle_city(message: Message, state: FSMContext) -> None:
     )
 
 
-# =====================
-# Deal type and rooms selection
-# =====================
-
 @router.callback_query(F.data.startswith("type:"))
 async def handle_type(callback: CallbackQuery, state: FSMContext) -> None:
     deal_type = callback.data.split(":", 1)[1]
@@ -203,7 +274,7 @@ async def handle_rooms(callback: CallbackQuery, state: FSMContext) -> None:
     city_code = data["city_code"]
     deal_type = data["deal_type"]
 
-    listings = get_last_listings(city_code=city_code, deal_type=deal_type, rooms=rooms, limit=5)
+    listings = await db_get_last_listings(city_code=city_code, deal_type=deal_type, rooms=rooms, limit=5)
 
     if not listings:
         await callback.message.answer("К сожалению, по выбранным фильтрам объявлений пока нет.")
@@ -230,10 +301,6 @@ async def handle_rooms(callback: CallbackQuery, state: FSMContext) -> None:
 
     await callback.answer()
 
-
-# =====================
-# Application questionnaire
-# =====================
 
 @router.callback_query(F.data.startswith("contact:"))
 async def start_application(callback: CallbackQuery, state: FSMContext) -> None:
@@ -371,7 +438,7 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
     await state.update_data(phone=phone)
     data = await state.get_data()
 
-    listing = find_listing_by_id(data.get("listing_id", ""))
+    listing = await db_find_listing_by_id(data.get("listing_id", ""))
     if listing is None:
         listing_info = "Объявление не найдено (id потерян)."
         listing_link = "-"
@@ -399,10 +466,116 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
     await bot.send_message(chat_id=ADMIN_USER_ID, text=text)
 
     await message.answer(
-        "Спасибо, заявка отправлена. Мы свяжемся с вами в ближайшее время."
+        "Спасибо, заявка отправлена. Мы свяжемся с вами в ближайшее время.",
+        reply_markup=ReplyKeyboardRemove(),
     )
 
     await state.clear()
+
+
+# =====================
+# Admin flow: add listing
+# =====================
+
+@router.message(Command("add_listing"))
+async def admin_add_listing_start(message: Message, state: FSMContext) -> None:
+    if message.from_user.id != ADMIN_USER_ID:
+        return
+
+    city_keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Бенидорм"), KeyboardButton(text="Аликанте")],
+            [KeyboardButton(text="Кальпе"), KeyboardButton(text="Торревьеха")],
+            [KeyboardButton(text="Коммерческое")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+    await state.set_state(AdminAddListingStates.city)
+    await message.answer("Выберите город для нового объекта:", reply_markup=city_keyboard)
+
+
+@router.message(AdminAddListingStates.city)
+async def admin_set_city(message: Message, state: FSMContext) -> None:
+    if message.text not in CITY_LABELS:
+        await message.answer("Пожалуйста, выберите город из списка.")
+        return
+
+    city_code = CITY_CODES[message.text]
+    await state.update_data(city_code=city_code)
+
+    type_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Аренда", callback_data="adm_type:rent"),
+                InlineKeyboardButton(text="Покупка", callback_data="adm_type:buy"),
+            ]
+        ]
+    )
+
+    await state.set_state(AdminAddListingStates.deal_type)
+    await message.answer("Выберите тип сделки:", reply_markup=type_kb)
+
+
+@router.callback_query(AdminAddListingStates.deal_type, F.data.startswith("adm_type:"))
+async def admin_set_deal_type(callback: CallbackQuery, state: FSMContext) -> None:
+    deal_type = callback.data.split(":", 1)[1]
+    await state.update_data(deal_type=deal_type)
+
+    rooms_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="1", callback_data="adm_rooms:1"),
+                InlineKeyboardButton(text="2", callback_data="adm_rooms:2"),
+                InlineKeyboardButton(text="3+", callback_data="adm_rooms:3+"),
+            ]
+        ]
+    )
+
+    await state.set_state(AdminAddListingStates.rooms)
+    await callback.message.answer("Выберите количество комнат:", reply_markup=rooms_kb)
+    await callback.answer()
+
+
+@router.callback_query(AdminAddListingStates.rooms, F.data.startswith("adm_rooms:"))
+async def admin_set_rooms(callback: CallbackQuery, state: FSMContext) -> None:
+    rooms = callback.data.split(":", 1)[1]
+    await state.update_data(rooms=rooms)
+
+    await state.set_state(AdminAddListingStates.title)
+    await callback.message.answer(
+        "Введите заголовок объявления:",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminAddListingStates.title)
+async def admin_set_title(message: Message, state: FSMContext) -> None:
+    await state.update_data(title=message.text.strip())
+
+    await state.set_state(AdminAddListingStates.description)
+    await message.answer("Введите описание объекта (кратко):")
+
+
+@router.message(AdminAddListingStates.description)
+async def admin_set_description(message: Message, state: FSMContext) -> None:
+    await state.update_data(description=message.text.strip())
+
+    await state.set_state(AdminAddListingStates.link)
+    await message.answer("Отправьте ссылку на исходное объявление (в группе/канале):")
+
+
+@router.message(AdminAddListingStates.link)
+async def admin_save_listing(message: Message, state: FSMContext) -> None:
+    await state.update_data(link=message.text.strip())
+    data = await state.get_data()
+
+    await db_insert_listing(data)
+    await state.clear()
+
+    await message.answer("Объект добавлен. Он будет показан пользователям по соответствующим фильтрам.")
 
 
 # =====================
@@ -410,6 +583,7 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
 # =====================
 
 async def main() -> None:
+    await init_db()
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
