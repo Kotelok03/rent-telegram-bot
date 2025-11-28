@@ -47,6 +47,7 @@ CITY_CODES = {
     "Торревьеха": "torrevieja",
     "Коммерческое": "commercial",
 }
+CITY_LABEL_BY_CODE = {v: k for k, v in CITY_CODES.items()}
 
 # Deal types
 DEAL_TYPES = {
@@ -98,7 +99,9 @@ async def init_db() -> None:
         )
 
 
-async def db_get_last_listings(city_code: str, deal_type: str, rooms: str, limit: int = 5) -> List[Listing]:
+async def db_get_last_listings(
+    city_code: str, deal_type: str, rooms: str, limit: int = 5
+) -> List[Listing]:
     """Return last listings for given filters."""
     if db_pool is None:
         raise RuntimeError("DB pool is not initialized")
@@ -111,7 +114,39 @@ async def db_get_last_listings(city_code: str, deal_type: str, rooms: str, limit
             ORDER BY id DESC
             LIMIT $4
             """,
-            city_code, deal_type, rooms, limit,
+            city_code,
+            deal_type,
+            rooms,
+            limit,
+        )
+    return [
+        Listing(
+            id=str(row["id"]),
+            city_code=row["city_code"],
+            deal_type=row["deal_type"],
+            rooms=row["rooms"],
+            title=row["title"],
+            description=row["description"],
+            link=row["link"],
+        )
+        for row in rows
+    ]
+
+
+async def db_get_last_listings_admin(limit: int = 20) -> List[Listing]:
+    """Return last active listings for admin view."""
+    if db_pool is None:
+        raise RuntimeError("DB pool is not initialized")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, city_code, deal_type, rooms, title, description, link
+            FROM listings
+            WHERE is_active = TRUE
+            ORDER BY id DESC
+            LIMIT $1
+            """,
+            limit,
         )
     return [
         Listing(
@@ -169,6 +204,21 @@ async def db_insert_listing(data: dict) -> None:
             data["title"],
             data["description"],
             data["link"],
+        )
+
+
+async def db_deactivate_listing(listing_id: str) -> None:
+    """Mark listing as inactive (hide from users)."""
+    if db_pool is None:
+        raise RuntimeError("DB pool is not initialized")
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE listings
+            SET is_active = FALSE
+            WHERE id = $1
+            """,
+            int(listing_id),
         )
 
 
@@ -274,7 +324,9 @@ async def handle_rooms(callback: CallbackQuery, state: FSMContext) -> None:
     city_code = data["city_code"]
     deal_type = data["deal_type"]
 
-    listings = await db_get_last_listings(city_code=city_code, deal_type=deal_type, rooms=rooms, limit=5)
+    listings = await db_get_last_listings(
+        city_code=city_code, deal_type=deal_type, rooms=rooms, limit=5
+    )
 
     if not listings:
         await callback.message.answer("К сожалению, по выбранным фильтрам объявлений пока нет.")
@@ -564,7 +616,7 @@ async def admin_set_description(message: Message, state: FSMContext) -> None:
     await state.update_data(description=message.text.strip())
 
     await state.set_state(AdminAddListingStates.link)
-    await message.answer("Отправьте ссылку на исходное объявление (в группе/канале):")
+    await message.answer("Отправьте ссылку на исходное объявление (в группе/канале или на сайте):")
 
 
 @router.message(AdminAddListingStates.link)
@@ -576,6 +628,60 @@ async def admin_save_listing(message: Message, state: FSMContext) -> None:
     await state.clear()
 
     await message.answer("Объект добавлен. Он будет показан пользователям по соответствующим фильтрам.")
+
+
+# =====================
+# Admin flow: list and delete listings
+# =====================
+
+@router.message(Command("list_listings"))
+async def admin_list_listings(message: Message) -> None:
+    """Show last active listings with delete buttons."""
+    if message.from_user.id != ADMIN_USER_ID:
+        return
+
+    listings = await db_get_last_listings_admin(limit=20)
+    if not listings:
+        await message.answer("Активных объявлений сейчас нет.")
+        return
+
+    for lst in listings:
+        city_label = CITY_LABEL_BY_CODE.get(lst.city_code, lst.city_code)
+        deal_type_label = DEAL_TYPES.get(lst.deal_type, lst.deal_type)
+        text = (
+            f"ID: {lst.id}\n"
+            f"Город: {city_label}\n"
+            f"Тип: {deal_type_label}\n"
+            f"Комнат: {lst.rooms}\n"
+            f"Заголовок: {lst.title}\n"
+            f"Ссылка: {lst.link}"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Удалить из выдачи",
+                        callback_data=f"adm_del:{lst.id}",
+                    )
+                ]
+            ]
+        )
+        await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("adm_del:"))
+async def admin_delete_listing(callback: CallbackQuery) -> None:
+    """Deactivate listing from admin interface."""
+    if callback.from_user.id != ADMIN_USER_ID:
+        await callback.answer()
+        return
+
+    listing_id = callback.data.split(":", 1)[1]
+    await db_deactivate_listing(listing_id)
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(f"Объявление ID {listing_id} удалено из выдачи.")
+    await callback.answer("Объявление скрыто.")
 
 
 # =====================
