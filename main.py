@@ -8,7 +8,7 @@ import asyncpg
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import CommandStart, Command, StateFilter
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -559,12 +559,12 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
 # Admin flow: add listing
 # =====================
 
-@router.message(Command("add_listing") | (F.text == "Добавить объявление"))
+@router.message(F.text.in_(["/add_listing", "Добавить объявление"]))
 async def admin_add_listing_start(message: Message, state: FSMContext) -> None:
+    # Проверяем, что это именно администратор
     if message.from_user.id != ADMIN_USER_ID:
         return
 
-    # Оставляем основное меню, админ просто выбирает город кнопкой
     await state.set_state(AdminAddListingStates.city)
     await message.answer("Выберите город для нового объекта (кнопкой ниже):")
 
@@ -656,7 +656,7 @@ async def admin_save_listing(message: Message, state: FSMContext) -> None:
 # Admin flow: list and delete listings
 # =====================
 
-@router.message(Command("list_listings") | (F.text == "Просмотреть список объявлений"))
+@router.message(F.text.in_(["/list_listings", "Просмотреть список объявлений"]))
 async def admin_list_listings(message: Message) -> None:
     """Show last active listings with delete buttons."""
     if message.from_user.id != ADMIN_USER_ID:
