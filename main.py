@@ -64,6 +64,31 @@ ROOMS = {
 
 
 # =====================
+# Helper: main keyboard
+# =====================
+
+def build_main_keyboard(is_admin: bool) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text="Бенидорм"), KeyboardButton(text="Аликанте")],
+        [KeyboardButton(text="Кальпе"), KeyboardButton(text="Торревьеха")],
+        [KeyboardButton(text="Коммерческое")],
+    ]
+
+    if is_admin:
+        rows.append(
+            [
+                KeyboardButton(text="/add_listing"),
+                KeyboardButton(text="/list_listings"),
+            ]
+        )
+
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+    )
+
+
+# =====================
 # Data model & DB
 # =====================
 
@@ -257,32 +282,12 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
 
     is_admin = message.from_user.id == ADMIN_USER_ID
-
-    rows = [
-        [KeyboardButton(text="Бенидорм"), KeyboardButton(text="Аликанте")],
-        [KeyboardButton(text="Кальпе"), KeyboardButton(text="Торревьеха")],
-        [KeyboardButton(text="Коммерческое")],
-    ]
-
-    # Добавляем админ-кнопки только администратору
-    if is_admin:
-        rows.append(
-            [
-                KeyboardButton(text="/add_listing"),
-                KeyboardButton(text="/list_listings"),
-            ]
-        )
-
-    city_keyboard = ReplyKeyboardMarkup(
-        keyboard=rows,
-        resize_keyboard=True,
-    )
+    city_keyboard = build_main_keyboard(is_admin=is_admin)
 
     await message.answer(
         "Здравствуйте. Выберите город, в котором ищете объект:",
         reply_markup=city_keyboard,
     )
-
 
 
 @router.message(StateFilter(None), F.text.in_(CITY_LABELS))
@@ -303,6 +308,10 @@ async def handle_city(message: Message, state: FSMContext) -> None:
 
     await message.answer(
         f"Город: {city_label}. Выберите тип: аренда или покупка.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await message.answer(
+        "Выберите тип сделки:",
         reply_markup=type_kb,
     )
 
@@ -531,9 +540,10 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
 
     await bot.send_message(chat_id=ADMIN_USER_ID, text=text)
 
+    is_admin = message.from_user.id == ADMIN_USER_ID
     await message.answer(
         "Спасибо, заявка отправлена. Мы свяжемся с вами в ближайшее время.",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=build_main_keyboard(is_admin=is_admin),
     )
 
     await state.clear()
@@ -548,24 +558,16 @@ async def admin_add_listing_start(message: Message, state: FSMContext) -> None:
     if message.from_user.id != ADMIN_USER_ID:
         return
 
-    city_keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Бенидорм"), KeyboardButton(text="Аликанте")],
-            [KeyboardButton(text="Кальпе"), KeyboardButton(text="Торревьеха")],
-            [KeyboardButton(text="Коммерческое")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
+    city_keyboard = build_main_keyboard(is_admin=True)
 
     await state.set_state(AdminAddListingStates.city)
-    await message.answer("Выберите город для нового объекта:", reply_markup=city_keyboard)
+    await message.answer("Выберите город для нового объекта (кнопкой ниже):", reply_markup=city_keyboard)
 
 
 @router.message(AdminAddListingStates.city)
 async def admin_set_city(message: Message, state: FSMContext) -> None:
     if message.text not in CITY_LABELS:
-        await message.answer("Пожалуйста, выберите город из списка.")
+        await message.answer("Пожалуйста, выберите город из списка ниже.")
         return
 
     city_code = CITY_CODES[message.text]
@@ -610,10 +612,7 @@ async def admin_set_rooms(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(rooms=rooms)
 
     await state.set_state(AdminAddListingStates.title)
-    await callback.message.answer(
-        "Введите заголовок объявления:",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    await callback.message.answer("Введите заголовок объявления текстом:")
     await callback.answer()
 
 
@@ -622,7 +621,7 @@ async def admin_set_title(message: Message, state: FSMContext) -> None:
     await state.update_data(title=message.text.strip())
 
     await state.set_state(AdminAddListingStates.description)
-    await message.answer("Введите описание объекта (кратко):")
+    await message.answer("Введите краткое описание объекта:")
 
 
 @router.message(AdminAddListingStates.description)
@@ -630,7 +629,7 @@ async def admin_set_description(message: Message, state: FSMContext) -> None:
     await state.update_data(description=message.text.strip())
 
     await state.set_state(AdminAddListingStates.link)
-    await message.answer("Отправьте ссылку на исходное объявление (в группе/канале или на сайте):")
+    await message.answer("Отправьте ссылку на исходное объявление (канал/группа/сайт):")
 
 
 @router.message(AdminAddListingStates.link)
@@ -641,7 +640,11 @@ async def admin_save_listing(message: Message, state: FSMContext) -> None:
     await db_insert_listing(data)
     await state.clear()
 
-    await message.answer("Объект добавлен. Он будет показан пользователям по соответствующим фильтрам.")
+    is_admin = message.from_user.id == ADMIN_USER_ID
+    await message.answer(
+        "Объект добавлен. Он будет показан пользователям по соответствующим фильтрам.",
+        reply_markup=build_main_keyboard(is_admin=is_admin),
+    )
 
 
 # =====================
