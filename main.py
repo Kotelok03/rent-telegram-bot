@@ -256,12 +256,25 @@ router = Router()
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
 
+    is_admin = message.from_user.id == ADMIN_USER_ID
+
+    rows = [
+        [KeyboardButton(text="Бенидорм"), KeyboardButton(text="Аликанте")],
+        [KeyboardButton(text="Кальпе"), KeyboardButton(text="Торревьеха")],
+        [KeyboardButton(text="Коммерческое")],
+    ]
+
+    # Добавляем админ-кнопки только администратору
+    if is_admin:
+        rows.append(
+            [
+                KeyboardButton(text="/add_listing"),
+                KeyboardButton(text="/list_listings"),
+            ]
+        )
+
     city_keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Бенидорм"), KeyboardButton(text="Аликанте")],
-            [KeyboardButton(text="Кальпе"), KeyboardButton(text="Торревьеха")],
-            [KeyboardButton(text="Коммерческое")],
-        ],
+        keyboard=rows,
         resize_keyboard=True,
     )
 
@@ -269,6 +282,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         "Здравствуйте. Выберите город, в котором ищете объект:",
         reply_markup=city_keyboard,
     )
+
 
 
 @router.message(StateFilter(None), F.text.in_(CITY_LABELS))
