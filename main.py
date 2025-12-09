@@ -29,6 +29,7 @@ from aiogram.types import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
+DOMIX_CHANNEL_ID = -1003184213941  # канал @domixcapital
 
 if not BOT_TOKEN or not ADMIN_USER_ID:
     raise RuntimeError("BOT_TOKEN and ADMIN_USER_ID must be set as environment variables")
@@ -546,6 +547,14 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
 
     await bot.send_message(chat_id=ADMIN_USER_ID, text=text)
 
+        # дублируем заявку в канал (если нужно в тот же @domixcapital)
+    if DOMIX_CHANNEL_ID:
+        await bot.send_message(
+            chat_id=DOMIX_CHANNEL_ID,
+            text="Новая заявка:\n\n" + text,
+        )
+
+
     is_admin = message.from_user.id == ADMIN_USER_ID
     await message.answer(
         "Спасибо, заявка отправлена. Мы свяжемся с вами в ближайшее время.",
@@ -638,11 +647,28 @@ async def admin_set_description(message: Message, state: FSMContext) -> None:
 
 
 @router.message(AdminAddListingStates.link)
-async def admin_save_listing(message: Message, state: FSMContext) -> None:
+async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> None:
     await state.update_data(link=message.text.strip())
     data = await state.get_data()
 
+    # сохраняем объект в базу
     await db_insert_listing(data)
+
+    # отправляем карточку объекта в канал @domixcapital
+    if DOMIX_CHANNEL_ID:
+        city_label = CITY_LABEL_BY_CODE.get(data["city_code"], data["city_code"])
+        deal_type_label = DEAL_TYPES.get(data["deal_type"], data["deal_type"])
+        text = (
+            "Новый объект:\n\n"
+            f"Город: {city_label}\n"
+            f"Тип: {deal_type_label}\n"
+            f"Комнат: {data['rooms']}\n"
+            f"Заголовок: {data['title']}\n"
+            f"Описание: {data['description']}\n"
+            f"Ссылка: {data['link']}"
+        )
+        await bot.send_message(chat_id=DOMIX_CHANNEL_ID, text=text)
+
     await state.clear()
 
     is_admin = message.from_user.id == ADMIN_USER_ID
@@ -650,6 +676,7 @@ async def admin_save_listing(message: Message, state: FSMContext) -> None:
         "Объект добавлен. Он будет показан пользователям по соответствующим фильтрам.",
         reply_markup=build_main_keyboard(is_admin=is_admin),
     )
+
 
 
 # =====================
