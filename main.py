@@ -29,8 +29,10 @@ from aiogram.types import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
+
 DOMIX_CHANNEL_ID = -1003445716247  # канал @domixcapital
-NOTIFY_CHAT_ID = int(os.getenv("NOTIFY_CHAT_ID", "0"))
+NOTIFY_CHAT_ID = int(os.getenv("NOTIFY_CHAT_ID", "0"))  # рабочий чат для заявок (может быть 0)
+
 
 if not BOT_TOKEN or not ADMIN_USER_ID:
     raise RuntimeError("BOT_TOKEN and ADMIN_USER_ID must be set as environment variables")
@@ -546,15 +548,22 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
         f"Пользователь: {username}"
     )
 
+    # отправляем админу в личку
     await bot.send_message(chat_id=ADMIN_USER_ID, text=text)
 
-    # дублируем заявку в канал (если нужно в тот же @domixcapital)
+    # дублируем заявку в канал DOMIX (если канал задан)
     if DOMIX_CHANNEL_ID:
         await bot.send_message(
             chat_id=DOMIX_CHANNEL_ID,
             text="Новая заявка:\n\n" + text,
         )
 
+    # дублируем заявку в рабочий чат (если NOTIFY_CHAT_ID задан)
+    if NOTIFY_CHAT_ID:
+        await bot.send_message(
+            chat_id=NOTIFY_CHAT_ID,
+            text="Новая заявка (рабочий чат):\n\n" + text,
+        )
 
     is_admin = message.from_user.id == ADMIN_USER_ID
     await message.answer(
@@ -562,13 +571,8 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
         reply_markup=build_main_keyboard(is_admin=is_admin),
     )
 
-        if NOTIFY_CHAT_ID:
-        await bot.send_message(
-            chat_id=NOTIFY_CHAT_ID,
-            text="Новая заявка (рабочий чат):\n\n" + text,
-        )
-
     await state.clear()
+
 
 
 # =====================
