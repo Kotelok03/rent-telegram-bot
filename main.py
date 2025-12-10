@@ -29,7 +29,7 @@ from aiogram.types import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
-DOMIX_CHANNEL_ID = -1003184213941  # канал @domixcapital
+DOMIX_CHANNEL_ID = -1003445716247  # канал @domixcapital
 NOTIFY_CHAT_ID = int(os.getenv("NOTIFY_CHAT_ID", "0"))
 
 if not BOT_TOKEN or not ADMIN_USER_ID:
