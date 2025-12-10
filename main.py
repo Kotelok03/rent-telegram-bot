@@ -547,23 +547,13 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
         f"Пользователь: {username}"
     )
 
-    # отправляем админу в личку
+    # 1) отправляем админу в личку
     try:
         await bot.send_message(chat_id=ADMIN_USER_ID, text=text)
     except Exception as e:
         print(f"Ошибка отправки заявки админу: {e}")
 
-    # дублируем заявку в канал DOMIX
-    if DOMIX_CHANNEL_ID:
-        try:
-            await bot.send_message(
-                chat_id=DOMIX_CHANNEL_ID,
-                text="Новая заявка:\n\n" + text,
-            )
-        except Exception as e:
-            print(f"Ошибка отправки заявки в канал DOMIX: {e}")
-
-    # дублируем заявку в рабочий чат
+    # 2) отправляем только в рабочий чат (если настроен NOTIFY_CHAT_ID)
     if NOTIFY_CHAT_ID:
         try:
             await bot.send_message(
