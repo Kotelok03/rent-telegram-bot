@@ -30,6 +30,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 DOMIX_CHANNEL_ID = -1003184213941  # канал @domixcapital
+NOTIFY_CHAT_ID = int(os.getenv("NOTIFY_CHAT_ID", "0"))
 
 if not BOT_TOKEN or not ADMIN_USER_ID:
     raise RuntimeError("BOT_TOKEN and ADMIN_USER_ID must be set as environment variables")
@@ -547,7 +548,7 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
 
     await bot.send_message(chat_id=ADMIN_USER_ID, text=text)
 
-        # дублируем заявку в канал (если нужно в тот же @domixcapital)
+    # дублируем заявку в канал (если нужно в тот же @domixcapital)
     if DOMIX_CHANNEL_ID:
         await bot.send_message(
             chat_id=DOMIX_CHANNEL_ID,
@@ -560,6 +561,12 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
         "Спасибо, заявка отправлена. Мы свяжемся с вами в ближайшее время.",
         reply_markup=build_main_keyboard(is_admin=is_admin),
     )
+
+        if NOTIFY_CHAT_ID:
+        await bot.send_message(
+            chat_id=NOTIFY_CHAT_ID,
+            text="Новая заявка (рабочий чат):\n\n" + text,
+        )
 
     await state.clear()
 
