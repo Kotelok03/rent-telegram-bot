@@ -269,9 +269,9 @@ class AdminAddListingStates(StatesGroup):
     city = State()
     deal_type = State()
     rooms = State()
-    title = State()
     description = State()
-    link = State()
+    photo = State()
+
 
 
 router = Router()
@@ -632,31 +632,72 @@ async def admin_set_rooms(callback: CallbackQuery, state: FSMContext) -> None:
     rooms = callback.data.split(":", 1)[1]
     await state.update_data(rooms=rooms)
 
-    await state.set_state(AdminAddListingStates.title)
-    await callback.message.answer("Введите заголовок объявления текстом:")
-    await callback.answer()
-
-
-@router.message(AdminAddListingStates.title)
-async def admin_set_title(message: Message, state: FSMContext) -> None:
-    await state.update_data(title=message.text.strip())
-
     await state.set_state(AdminAddListingStates.description)
-    await message.answer("Введите краткое описание объекта:")
+    await callback.message.answer(
+        "Введите полное описание объекта (любое количество текста):"
+    )
+    await callback.answer()
 
 
 @router.message(AdminAddListingStates.description)
 async def admin_set_description(message: Message, state: FSMContext) -> None:
     await state.update_data(description=message.text.strip())
 
-    await state.set_state(AdminAddListingStates.link)
-    await message.answer("Отправьте ссылку на исходное объявление (канал/группа/сайт):")
+    await state.set_state(AdminAddListingStates.photo)
+    await message.answer(
+        "Отправьте одно фото объекта (как картинку, не как файл-документ). "
+        "Это фото будет использовано в канале."
+    )
 
 
-@router.message(AdminAddListingStates.link)
+@router.message(AdminAddListingStates.photo)
 async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> None:
-    await state.update_data(link=message.text.strip())
+    # Проверяем, что пришло фото
+    if not message.photo:
+        await message.answer("Пожалуйста, отправьте именно фото объекта.")
+        return
+
+    # Берём самое большое фото
+    photo = message.photo[-1]
+    await state.update_data(photo_file_id=photo.file_id)
     data = await state.get_data()
+
+    # сохраняем объект в базу: title и link пока не используем
+    await db_insert_listing(
+        {
+            "city_code": data["city_code"],
+            "deal_type": data["deal_type"],
+            "rooms": data["rooms"],
+            "title": "",  # заголовок не используем
+            "description": data["description"],
+            "link": "",   # ссылку не используем
+        }
+    )
+
+    # отправляем карточку объекта в канал как фото + текст
+    if DOMIX_CHANNEL_ID:
+        city_label = CITY_LABEL_BY_CODE.get(data["city_code"], data["city_code"])
+        deal_type_label = DEAL_TYPES.get(data["deal_type"], data["deal_type"])
+        caption = (
+            "Новый объект:\n\n"
+            f"Город: {city_label}\n"
+            f"Тип: {deal_type_label}\n"
+            f"Комнат: {data['rooms']}\n\n"
+            f"{data['description']}"
+        )
+        await bot.send_photo(
+            chat_id=DOMIX_CHANNEL_ID,
+            photo=photo.file_id,
+            caption=caption,
+        )
+
+    await state.clear()
+
+    is_admin = message.from_user.id == ADMIN_USER_ID
+    await message.answer(
+        "Объект добавлен. Он будет показан пользователям по соответствующим фильтрам.",
+        reply_markup=build_main_keyboard(is_admin=is_admin),
+    )
 
     error_text = None
 
