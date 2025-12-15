@@ -662,19 +662,29 @@ async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> N
     await state.update_data(photo_file_id=photo.file_id)
     data = await state.get_data()
 
-    # сохраняем объект в базу: title и link пока не используем
-    await db_insert_listing(
-        {
-            "city_code": data["city_code"],
-            "deal_type": data["deal_type"],
-            "rooms": data["rooms"],
-            "title": "",  # заголовок не используем
-            "description": data["description"],
-            "link": "",   # ссылку не используем
-        }
-    )
+    # 1. Сохраняем объект в базу: title и link сейчас не используем
+    try:
+        await db_insert_listing(
+            {
+                "city_code": data["city_code"],
+                "deal_type": data["deal_type"],
+                "rooms": data["rooms"],
+                "title": "",  # заголовок не используем
+                "description": data["description"],
+                "link": "",   # ссылку не используем
+            }
+        )
+    except Exception as e:
+        print(f"Ошибка сохранения объявления в БД: {e}")
+        is_admin = message.from_user.id == ADMIN_USER_ID
+        await message.answer(
+            "Произошла ошибка при сохранении объявления. Пожалуйста, сообщите разработчику.",
+            reply_markup=build_main_keyboard(is_admin=is_admin),
+        )
+        await state.clear()
+        return
 
-    # отправляем карточку объекта в канал как фото + текст
+    # 2. Отправляем карточку объекта в канал как фото + текст
     if DOMIX_CHANNEL_ID:
         city_label = CITY_LABEL_BY_CODE.get(data["city_code"], data["city_code"])
         deal_type_label = DEAL_TYPES.get(data["deal_type"], data["deal_type"])
@@ -685,12 +695,16 @@ async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> N
             f"Комнат: {data['rooms']}\n\n"
             f"{data['description']}"
         )
-        await bot.send_photo(
-            chat_id=DOMIX_CHANNEL_ID,
-            photo=photo.file_id,
-            caption=caption,
-        )
+        try:
+            await bot.send_photo(
+                chat_id=DOMIX_CHANNEL_ID,
+                photo=photo.file_id,
+                caption=caption,
+            )
+        except Exception as e:
+            print(f"Ошибка отправки объекта в канал DOMIX: {e}")
 
+    # 3. Чистим состояние и возвращаем меню
     await state.clear()
 
     is_admin = message.from_user.id == ADMIN_USER_ID
@@ -699,47 +713,6 @@ async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> N
         reply_markup=build_main_keyboard(is_admin=is_admin),
     )
 
-    error_text = None
-
-    # сохраняем объект в базу
-    try:
-        await db_insert_listing(data)
-    except Exception as e:
-        print(f"Ошибка сохранения объявления в БД: {e}")
-        error_text = "Произошла ошибка при сохранении объявления. Разработчик уведомлен."
-
-    # отправляем карточку объекта в канал @domixcapital (если нужно)
-    if not error_text and DOMIX_CHANNEL_ID:
-        try:
-            city_label = CITY_LABEL_BY_CODE.get(data["city_code"], data["city_code"])
-            deal_type_label = DEAL_TYPES.get(data["deal_type"], data["deal_type"])
-            text = (
-                "Новый объект:\n\n"
-                f"Город: {city_label}\n"
-                f"Тип: {deal_type_label}\n"
-                f"Комнат: {data['rooms']}\n"
-                f"Заголовок: {data['title']}\n"
-                f"Описание: {data['description']}\n"
-                f"Ссылка: {data['link']}"
-            )
-            await bot.send_message(chat_id=DOMIX_CHANNEL_ID, text=text)
-        except Exception as e:
-            print(f"Ошибка отправки объекта в канал DOMIX: {e}")
-
-    is_admin = message.from_user.id == ADMIN_USER_ID
-
-    if error_text:
-        await message.answer(
-            error_text,
-            reply_markup=build_main_keyboard(is_admin=is_admin),
-        )
-    else:
-        await message.answer(
-            "Объект добавлен. Он будет показан пользователям по соответствующим фильтрам.",
-            reply_markup=build_main_keyboard(is_admin=is_admin),
-        )
-
-    await state.clear()
 
 
 # =====================
