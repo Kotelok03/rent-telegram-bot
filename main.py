@@ -30,7 +30,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-DOMIX_CHANNEL_ID = -1003445716247  # канал @domixcapital
+DOMIX_CHANNEL_ID = -1003184213941  # канал
 NOTIFY_CHAT_ID = int(os.getenv("NOTIFY_CHAT_ID", "0"))  # рабочий чат для заявок (может быть 0)
 
 if not BOT_TOKEN or not ADMIN_USER_ID:
@@ -38,6 +38,21 @@ if not BOT_TOKEN or not ADMIN_USER_ID:
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL must be set as environment variable")
+
+# Несколько админов: ADMIN_USER_ID + ADMIN_USER_IDS (через запятую)
+ADMIN_USER_IDS_RAW = os.getenv("ADMIN_USER_IDS", "").strip()
+
+if ADMIN_USER_IDS_RAW:
+    ADMIN_IDS = {int(x.strip()) for x in ADMIN_USER_IDS_RAW.split(",") if x.strip()}
+    ADMIN_IDS.add(ADMIN_USER_ID)
+else:
+    ADMIN_IDS = {ADMIN_USER_ID}
+
+
+def is_admin(user_id: int) -> bool:
+    """Return True if user_id is in admins list."""
+    return user_id in ADMIN_IDS
+
 
 db_pool: Optional[asyncpg.Pool] = None
 
@@ -70,7 +85,7 @@ ROOMS = {
 # Helper: main keyboard
 # =====================
 
-def build_main_keyboard(is_admin: bool) -> ReplyKeyboardMarkup:
+def build_main_keyboard(is_admin_flag: bool) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text="Бенидорм"), KeyboardButton(text="Аликанте")],
         [KeyboardButton(text="Кальпе"), KeyboardButton(text="Торревьеха")],
@@ -78,7 +93,7 @@ def build_main_keyboard(is_admin: bool) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="Перезапустить")],
     ]
 
-    if is_admin:
+    if is_admin_flag:
         rows.append(
             [
                 KeyboardButton(text="Добавить объявление"),
@@ -269,6 +284,7 @@ class AdminAddListingStates(StatesGroup):
     city = State()
     deal_type = State()
     rooms = State()
+    description = State()
     link = State()
 
 
@@ -283,8 +299,8 @@ router = Router()
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
 
-    is_admin = message.from_user.id == ADMIN_USER_ID
-    city_keyboard = build_main_keyboard(is_admin=is_admin)
+    admin_flag = is_admin(message.from_user.id)
+    city_keyboard = build_main_keyboard(is_admin_flag=admin_flag)
 
     await message.answer(
         "Здравствуйте. Выберите город, в котором ищете объект:",
@@ -313,15 +329,14 @@ async def handle_city(message: Message, state: FSMContext) -> None:
         ]
     )
 
-    # НИЧЕГО не убираем, просто отправляем текст
     await message.answer(
-        f"Город: {city_label}. Выберите тип: аренда или покупка."
+        f"Город: {city_label}. Выберите тип: аренда или покупка.",
+        reply_markup=ReplyKeyboardRemove(),
     )
     await message.answer(
         "Выберите тип сделки:",
         reply_markup=type_kb,
     )
-
 
 
 @router.callback_query(F.data.startswith("type:"))
@@ -365,16 +380,10 @@ async def handle_rooms(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     for lst in listings:
-        # если нет заголовка и описания, показываем только ссылку
-        if not lst.title and not lst.description:
-            text = f"Ссылка на объявление: {lst.link}"
-        else:
-            text = (
-                (f"<b>{lst.title}</b>\n\n" if lst.title else "")
-                + (f"{lst.description}\n\n" if lst.description else "")
-                + f"Ссылка на объявление: {lst.link}"
-            )
-
+        text = (
+            f"{lst.description}\n\n"
+            f"Ссылка на объявление: {lst.link}"
+        )
         contact_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -388,7 +397,8 @@ async def handle_rooms(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.answer(text, reply_markup=contact_kb)
 
     await callback.answer()
-    
+
+
 @router.callback_query(F.data.startswith("contact:"))
 async def start_application(callback: CallbackQuery, state: FSMContext) -> None:
     listing_id = callback.data.split(":", 1)[1]
@@ -530,7 +540,7 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
         listing_info = "Объявление не найдено (id потерян)."
         listing_link = "-"
     else:
-        listing_info = listing.title
+        listing_info = listing.description
         listing_link = listing.link
 
     user = message.from_user
@@ -550,13 +560,14 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
         f"Пользователь: {username}"
     )
 
-    # 1) админу
-    try:
-        await bot.send_message(chat_id=ADMIN_USER_ID, text=text)
-    except Exception as e:
-        print(f"Ошибка отправки заявки админу: {e}")
+    # отправляем всем админам
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(chat_id=admin_id, text=text)
+        except Exception as e:
+            print(f"Ошибка отправки заявки админу {admin_id}: {e}")
 
-    # 2) рабочий чат (если задан)
+    # в рабочий чат
     if NOTIFY_CHAT_ID:
         try:
             await bot.send_message(
@@ -566,10 +577,10 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
         except Exception as e:
             print(f"Ошибка отправки заявки в рабочий чат: {e}")
 
-    is_admin = message.from_user.id == ADMIN_USER_ID
+    admin_flag = is_admin(message.from_user.id)
     await message.answer(
         "Спасибо, заявка отправлена. Мы свяжемся с вами в ближайшее время.",
-        reply_markup=build_main_keyboard(is_admin=is_admin),
+        reply_markup=build_main_keyboard(is_admin_flag=admin_flag),
     )
 
     await state.clear()
@@ -581,7 +592,7 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
 
 @router.message(F.text.in_(["/add_listing", "Добавить объявление"]))
 async def admin_add_listing_start(message: Message, state: FSMContext) -> None:
-    if message.from_user.id != ADMIN_USER_ID:
+    if not is_admin(message.from_user.id):
         return
 
     await state.set_state(AdminAddListingStates.city)
@@ -612,6 +623,10 @@ async def admin_set_city(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(AdminAddListingStates.deal_type, F.data.startswith("adm_type:"))
 async def admin_set_deal_type(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+
     deal_type = callback.data.split(":", 1)[1]
     await state.update_data(deal_type=deal_type)
 
@@ -632,23 +647,43 @@ async def admin_set_deal_type(callback: CallbackQuery, state: FSMContext) -> Non
 
 @router.callback_query(AdminAddListingStates.rooms, F.data.startswith("adm_rooms:"))
 async def admin_set_rooms(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+
     rooms = callback.data.split(":", 1)[1]
     await state.update_data(rooms=rooms)
 
-    await state.set_state(AdminAddListingStates.link)
+    await state.set_state(AdminAddListingStates.description)
     await callback.message.answer(
-        "Отправьте ссылку на исходное объявление (канал/группа/сайт):"
+        "Введите полное описание объекта (любое количество текста):"
     )
     await callback.answer()
 
 
+@router.message(AdminAddListingStates.description)
+async def admin_set_description(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.update_data(description=message.text.strip())
+
+    await state.set_state(AdminAddListingStates.link)
+    await message.answer(
+        "Отправьте ссылку на исходное объявление (канал/группа/сайт):"
+    )
+
+
 @router.message(AdminAddListingStates.link)
 async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> None:
-    link = message.text.strip()
+    if not is_admin(message.from_user.id):
+        return
+
+    link = (message.text or "").strip()
     await state.update_data(link=link)
     data = await state.get_data()
 
-    # сохраняем объект в базу: title и description не используем
+    # сохраняем объект в базу (title не используем)
     try:
         await db_insert_listing(
             {
@@ -656,30 +691,31 @@ async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> N
                 "deal_type": data["deal_type"],
                 "rooms": data["rooms"],
                 "title": "",
-                "description": "",
-                "link": link,
+                "description": data["description"],
+                "link": data["link"],
             }
         )
     except Exception as e:
         print(f"Ошибка сохранения объявления в БД: {e}")
-        is_admin = message.from_user.id == ADMIN_USER_ID
+        admin_flag = is_admin(message.from_user.id)
         await message.answer(
             "Произошла ошибка при сохранении объявления. Пожалуйста, сообщите разработчику.",
-            reply_markup=build_main_keyboard(is_admin=is_admin),
+            reply_markup=build_main_keyboard(is_admin_flag=admin_flag),
         )
         await state.clear()
         return
 
-    # отправляем объект в канал
+    # отправляем карточку объекта в канал
     if DOMIX_CHANNEL_ID:
-        from_city = CITY_LABEL_BY_CODE.get(data["city_code"], data["city_code"])
+        city_label = CITY_LABEL_BY_CODE.get(data["city_code"], data["city_code"])
         deal_type_label = DEAL_TYPES.get(data["deal_type"], data["deal_type"])
         text = (
             "Новый объект:\n\n"
-            f"Город: {from_city}\n"
+            f"Город: {city_label}\n"
             f"Тип: {deal_type_label}\n"
             f"Комнат: {data['rooms']}\n\n"
-            f"{link}"
+            f"{data['description']}\n\n"
+            f"Ссылка: {data['link']}"
         )
         try:
             await bot.send_message(chat_id=DOMIX_CHANNEL_ID, text=text)
@@ -688,11 +724,12 @@ async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> N
 
     await state.clear()
 
-    is_admin = message.from_user.id == ADMIN_USER_ID
+    admin_flag = is_admin(message.from_user.id)
     await message.answer(
         "Объект добавлен. Он будет показан пользователям по соответствующим фильтрам.",
-        reply_markup=build_main_keyboard(is_admin=is_admin),
+        reply_markup=build_main_keyboard(is_admin_flag=admin_flag),
     )
+
 
 # =====================
 # Admin flow: list and delete listings
@@ -701,7 +738,7 @@ async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> N
 @router.message(F.text.in_(["/list_listings", "Просмотреть список объявлений"]))
 async def admin_list_listings(message: Message) -> None:
     """Show last active listings with delete buttons."""
-    if message.from_user.id != ADMIN_USER_ID:
+    if not is_admin(message.from_user.id):
         return
 
     listings = await db_get_last_listings_admin(limit=20)
@@ -717,6 +754,7 @@ async def admin_list_listings(message: Message) -> None:
             f"Город: {city_label}\n"
             f"Тип: {deal_type_label}\n"
             f"Комнат: {lst.rooms}\n"
+            f"Описание: {lst.description}\n"
             f"Ссылка: {lst.link}"
         )
         kb = InlineKeyboardMarkup(
@@ -735,7 +773,7 @@ async def admin_list_listings(message: Message) -> None:
 @router.callback_query(F.data.startswith("adm_del:"))
 async def admin_delete_listing(callback: CallbackQuery) -> None:
     """Deactivate listing from admin interface."""
-    if callback.from_user.id != ADMIN_USER_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer()
         return
 
