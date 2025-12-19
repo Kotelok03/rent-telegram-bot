@@ -314,14 +314,15 @@ async def handle_city(message: Message, state: FSMContext) -> None:
         ]
     )
 
+    # НИЧЕГО не убираем, просто отправляем текст
     await message.answer(
-        f"Город: {city_label}. Выберите тип: аренда или покупка.",
-        reply_markup=ReplyKeyboardRemove(),
+        f"Город: {city_label}. Выберите тип: аренда или покупка."
     )
     await message.answer(
         "Выберите тип сделки:",
         reply_markup=type_kb,
     )
+
 
 
 @router.callback_query(F.data.startswith("type:"))
