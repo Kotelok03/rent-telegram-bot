@@ -731,7 +731,6 @@ async def admin_list_listings(message: Message) -> None:
             f"Город: {city_label}\n"
             f"Тип: {deal_type_label}\n"
             f"Комнат: {lst.rooms}\n"
-            f"Заголовок: {lst.title}\n"
             f"Ссылка: {lst.link}"
         )
         kb = InlineKeyboardMarkup(
