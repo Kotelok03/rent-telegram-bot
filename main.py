@@ -365,12 +365,8 @@ async def handle_rooms(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
 
-    for lst in listings:
-        text = (
-            f"<b>{lst.title}</b>\n\n"
-            f"{lst.description}\n\n"
-            f"Ссылка на объявление: {lst.link}"
-        )
+       for lst in listings:
+        text = f"Ссылка на объявление: {lst.link}"
         contact_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -382,6 +378,7 @@ async def handle_rooms(callback: CallbackQuery, state: FSMContext) -> None:
             ]
         )
         await callback.message.answer(text, reply_markup=contact_kb)
+
 
     await callback.answer()
 
