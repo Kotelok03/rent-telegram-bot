@@ -30,7 +30,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-DOMIX_CHANNEL_ID = -1003445716247  # канал @domixcapital
+DOMIX_CHANNEL_ID = -1003184213941  # канал @domixcapital
 NOTIFY_CHAT_ID = int(os.getenv("NOTIFY_CHAT_ID", "0"))  # рабочий чат для заявок (может быть 0)
 
 if not BOT_TOKEN or not ADMIN_USER_ID:
@@ -269,7 +269,6 @@ class AdminAddListingStates(StatesGroup):
     city = State()
     deal_type = State()
     rooms = State()
-    title = State()
     description = State()
     link = State()
 
@@ -547,13 +546,13 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
         f"Пользователь: {username}"
     )
 
-    # 1) отправляем админу в личку
+    # 1) админу
     try:
         await bot.send_message(chat_id=ADMIN_USER_ID, text=text)
     except Exception as e:
         print(f"Ошибка отправки заявки админу: {e}")
 
-    # 2) отправляем только в рабочий чат (если настроен NOTIFY_CHAT_ID)
+    # 2) рабочий чат (если задан)
     if NOTIFY_CHAT_ID:
         try:
             await bot.send_message(
@@ -573,7 +572,7 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
 
 
 # =====================
-# Admin flow: add listing
+# Admin flow: add listing (description + link)
 # =====================
 
 @router.message(F.text.in_(["/add_listing", "Добавить объявление"]))
@@ -632,17 +631,11 @@ async def admin_set_rooms(callback: CallbackQuery, state: FSMContext) -> None:
     rooms = callback.data.split(":", 1)[1]
     await state.update_data(rooms=rooms)
 
-    await state.set_state(AdminAddListingStates.title)
-    await callback.message.answer("Введите заголовок объявления текстом (коротко):")
-    await callback.answer()
-
-
-@router.message(AdminAddListingStates.title)
-async def admin_set_title(message: Message, state: FSMContext) -> None:
-    await state.update_data(title=message.text.strip())
-
     await state.set_state(AdminAddListingStates.description)
-    await message.answer("Введите полное описание объекта (любое количество текста):")
+    await callback.message.answer(
+        "Введите полное описание объекта (любое количество текста):"
+    )
+    await callback.answer()
 
 
 @router.message(AdminAddListingStates.description)
@@ -657,13 +650,27 @@ async def admin_set_description(message: Message, state: FSMContext) -> None:
 
 @router.message(AdminAddListingStates.link)
 async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> None:
-    """Сохраняем объект (описание + ссылка) и шлём его в канал."""
+    """Save listing (description + link) and send it to channel."""
     await state.update_data(link=message.text.strip())
     data = await state.get_data()
 
-    # 1. Сохраняем объект в базу
+    # Auto title from first line of description
+    desc = data["description"].strip()
+    first_line = desc.split("\n", 1)[0]
+    auto_title = first_line[:80] if first_line else "Объявление"
+
+    save_data = {
+        "city_code": data["city_code"],
+        "deal_type": data["deal_type"],
+        "rooms": data["rooms"],
+        "title": auto_title,
+        "description": desc,
+        "link": data["link"],
+    }
+
+    # Save to DB
     try:
-        await db_insert_listing(data)
+        await db_insert_listing(save_data)
     except Exception as e:
         print(f"Ошибка сохранения объявления в БД: {e}")
         is_admin = message.from_user.id == ADMIN_USER_ID
@@ -674,25 +681,23 @@ async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> N
         await state.clear()
         return
 
-    # 2. Отправляем карточку объекта в канал как текст
+    # Send to channel
     if DOMIX_CHANNEL_ID:
-        city_label = CITY_LABEL_BY_CODE.get(data["city_code"], data["city_code"])
-        deal_type_label = DEAL_TYPES.get(data["deal_type"], data["deal_type"])
+        city_label = CITY_LABEL_BY_CODE.get(save_data["city_code"], save_data["city_code"])
+        deal_type_label = DEAL_TYPES.get(save_data["deal_type"], save_data["deal_type"])
         text = (
             "Новый объект:\n\n"
             f"Город: {city_label}\n"
             f"Тип: {deal_type_label}\n"
-            f"Комнат: {data['rooms']}\n"
-            f"Заголовок: {data['title']}\n\n"
-            f"{data['description']}\n\n"
-            f"Ссылка: {data['link']}"
+            f"Комнат: {save_data['rooms']}\n\n"
+            f"{save_data['description']}\n\n"
+            f"Ссылка: {save_data['link']}"
         )
         try:
             await bot.send_message(chat_id=DOMIX_CHANNEL_ID, text=text)
         except Exception as e:
             print(f"Ошибка отправки объекта в канал DOMIX: {e}")
 
-    # 3. Чистим состояние и возвращаем меню
     await state.clear()
 
     is_admin = message.from_user.id == ADMIN_USER_ID
