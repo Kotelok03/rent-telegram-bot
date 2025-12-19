@@ -269,7 +269,6 @@ class AdminAddListingStates(StatesGroup):
     city = State()
     deal_type = State()
     rooms = State()
-    description = State()
     link = State()
 
 
@@ -357,22 +356,25 @@ async def handle_rooms(callback: CallbackQuery, state: FSMContext) -> None:
     deal_type = data["deal_type"]
 
     listings = await db_get_last_listings(
-        city_code=city_code,
-        deal_type=deal_type,
-        rooms=rooms,
-        limit=5,
+        city_code=city_code, deal_type=deal_type, rooms=rooms, limit=5
     )
 
     if not listings:
-        await callback.message.answer(
-            "К сожалению, по выбранным фильтрам объявлений пока нет."
-        )
+        await callback.message.answer("К сожалению, по выбранным фильтрам объявлений пока нет.")
         await callback.answer()
         return
 
-    # тут оставляем только ссылку
     for lst in listings:
-        text = f"Ссылка на объявление: {lst.link}"
+        # если нет заголовка и описания, показываем только ссылку
+        if not lst.title and not lst.description:
+            text = f"Ссылка на объявление: {lst.link}"
+        else:
+            text = (
+                (f"<b>{lst.title}</b>\n\n" if lst.title else "")
+                + (f"{lst.description}\n\n" if lst.description else "")
+                + f"Ссылка на объявление: {lst.link}"
+            )
+
         contact_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -574,7 +576,7 @@ async def complete_application(message: Message, state: FSMContext, bot: Bot) ->
 
 
 # =====================
-# Admin flow: add listing (description + link)
+# Admin flow: add listing
 # =====================
 
 @router.message(F.text.in_(["/add_listing", "Добавить объявление"]))
@@ -633,46 +635,31 @@ async def admin_set_rooms(callback: CallbackQuery, state: FSMContext) -> None:
     rooms = callback.data.split(":", 1)[1]
     await state.update_data(rooms=rooms)
 
-    await state.set_state(AdminAddListingStates.description)
+    await state.set_state(AdminAddListingStates.link)
     await callback.message.answer(
-        "Введите полное описание объекта (любое количество текста):"
+        "Отправьте ссылку на исходное объявление (канал/группа/сайт):"
     )
     await callback.answer()
 
 
-@router.message(AdminAddListingStates.description)
-async def admin_set_description(message: Message, state: FSMContext) -> None:
-    await state.update_data(description=message.text.strip())
-
-    await state.set_state(AdminAddListingStates.link)
-    await message.answer(
-        "Отправьте ссылку на исходное объявление (канал/группа/сайт):"
-    )
-
-
 @router.message(AdminAddListingStates.link)
 async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> None:
-    """Save listing (description + link) and send it to channel."""
-    await state.update_data(link=message.text.strip())
+    link = message.text.strip()
+    await state.update_data(link=link)
     data = await state.get_data()
 
-    # Auto title from first line of description
-    desc = data["description"].strip()
-    first_line = desc.split("\n", 1)[0]
-    auto_title = first_line[:80] if first_line else "Объявление"
-
-    save_data = {
-        "city_code": data["city_code"],
-        "deal_type": data["deal_type"],
-        "rooms": data["rooms"],
-        "title": auto_title,
-        "description": desc,
-        "link": data["link"],
-    }
-
-    # Save to DB
+    # сохраняем объект в базу: title и description не используем
     try:
-        await db_insert_listing(save_data)
+        await db_insert_listing(
+            {
+                "city_code": data["city_code"],
+                "deal_type": data["deal_type"],
+                "rooms": data["rooms"],
+                "title": "",
+                "description": "",
+                "link": link,
+            }
+        )
     except Exception as e:
         print(f"Ошибка сохранения объявления в БД: {e}")
         is_admin = message.from_user.id == ADMIN_USER_ID
@@ -683,17 +670,16 @@ async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> N
         await state.clear()
         return
 
-    # Send to channel
+    # отправляем объект в канал
     if DOMIX_CHANNEL_ID:
-        city_label = CITY_LABEL_BY_CODE.get(save_data["city_code"], save_data["city_code"])
-        deal_type_label = DEAL_TYPES.get(save_data["deal_type"], save_data["deal_type"])
+        from_city = CITY_LABEL_BY_CODE.get(data["city_code"], data["city_code"])
+        deal_type_label = DEAL_TYPES.get(data["deal_type"], data["deal_type"])
         text = (
             "Новый объект:\n\n"
-            f"Город: {city_label}\n"
+            f"Город: {from_city}\n"
             f"Тип: {deal_type_label}\n"
-            f"Комнат: {save_data['rooms']}\n\n"
-            f"{save_data['description']}\n\n"
-            f"Ссылка: {save_data['link']}"
+            f"Комнат: {data['rooms']}\n\n"
+            f"{link}"
         )
         try:
             await bot.send_message(chat_id=DOMIX_CHANNEL_ID, text=text)
@@ -707,7 +693,6 @@ async def admin_save_listing(message: Message, state: FSMContext, bot: Bot) -> N
         "Объект добавлен. Он будет показан пользователям по соответствующим фильтрам.",
         reply_markup=build_main_keyboard(is_admin=is_admin),
     )
-
 
 # =====================
 # Admin flow: list and delete listings
