@@ -357,15 +357,21 @@ async def handle_rooms(callback: CallbackQuery, state: FSMContext) -> None:
     deal_type = data["deal_type"]
 
     listings = await db_get_last_listings(
-        city_code=city_code, deal_type=deal_type, rooms=rooms, limit=5
+        city_code=city_code,
+        deal_type=deal_type,
+        rooms=rooms,
+        limit=5,
     )
 
     if not listings:
-        await callback.message.answer("К сожалению, по выбранным фильтрам объявлений пока нет.")
+        await callback.message.answer(
+            "К сожалению, по выбранным фильтрам объявлений пока нет."
+        )
         await callback.answer()
         return
 
-       for lst in listings:
+    # тут оставляем только ссылку
+    for lst in listings:
         text = f"Ссылка на объявление: {lst.link}"
         contact_kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -379,10 +385,8 @@ async def handle_rooms(callback: CallbackQuery, state: FSMContext) -> None:
         )
         await callback.message.answer(text, reply_markup=contact_kb)
 
-
     await callback.answer()
-
-
+    
 @router.callback_query(F.data.startswith("contact:"))
 async def start_application(callback: CallbackQuery, state: FSMContext) -> None:
     listing_id = callback.data.split(":", 1)[1]
